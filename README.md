@@ -26,7 +26,7 @@ A lightweight Blender add-on for **one-click Smart UV + texture baking** that:
   
 ## Requirements
 
-- Blender **5.0+**
+- Blender **5.2.2+**
 
 ## Installation
 

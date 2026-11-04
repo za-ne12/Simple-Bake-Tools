@@ -1,11 +1,11 @@
 bl_info = {
     "name": "Simple Bake Tools",
     "author": "za-ne12",
-    "version": (0, 3, 0),
-    "blender": (5, 0, 0),
+    "version": (0, 4, 0),
+    "blender": (5, 2, 2),
     "location": "View3D > Sidebar > Simple Bake",
     "category": "Material",
-    "description": "Smart UV + bake selected maps to images + build baked material (Blender 5-safe)",
+    "description": "Smart UV + bake selected maps to images + build baked material (Blender 5.2.2-safe)",
 }
 
 import bpy
@@ -172,13 +172,14 @@ def build_baked_material(obj, images, multiply_ao=True):
         ao.location = (-450, 0)
 
     if base and ao and multiply_ao:
-        mix = nodes.new("ShaderNodeMixRGB")
+        mix = nodes.new("ShaderNodeMix")
+        mix.data_type = 'RGBA'
         mix.blend_type = "MULTIPLY"
-        mix.inputs["Fac"].default_value = 1.0
+        mix.inputs["Factor"].default_value = 1.0
         mix.location = (-120, 180)
-        links.new(base.outputs["Color"], mix.inputs["Color1"])
-        links.new(ao.outputs["Color"], mix.inputs["Color2"])
-        links.new(mix.outputs["Color"], bsdf.inputs["Base Color"])
+        links.new(base.outputs["Color"], mix.inputs["A"])
+        links.new(ao.outputs["Color"], mix.inputs["B"])
+        links.new(mix.outputs["Result"], bsdf.inputs["Base Color"])
     elif base:
         links.new(base.outputs["Color"], bsdf.inputs["Base Color"])
 
@@ -192,7 +193,7 @@ def build_baked_material(obj, images, multiply_ao=True):
         e = nodes.new("ShaderNodeTexImage")
         e.image = images["emission"]
         e.location = (-450, -500)
-        links.new(e.outputs["Color"], bsdf.inputs["Emission"])
+        links.new(e.outputs["Color"], bsdf.inputs["Emission Color"])
 
     if "normal" in images:
         nimg = nodes.new("ShaderNodeTexImage")
