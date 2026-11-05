@@ -2,10 +2,10 @@ bl_info = {
     "name": "Simple Bake Tools",
     "author": "za-ne12",
     "version": (0, 4, 0),
-    "blender": (5, 2, 2),
+    "blender": (5, 0, 0),
     "location": "View3D > Sidebar > Simple Bake",
     "category": "Material",
-    "description": "Smart UV + bake selected maps to images + build baked material (Blender 5.2.2-safe)",
+    "description": "Smart UV + bake selected maps to images + build baked material (Blender 5.0.0-safe)",
 }
 
 import bpy
