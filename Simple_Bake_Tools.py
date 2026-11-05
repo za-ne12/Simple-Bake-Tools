@@ -2,10 +2,10 @@ bl_info = {
     "name": "Simple Bake Tools",
     "author": "za-ne12",
     "version": (0, 4, 0),
-    "blender": (5, 0, 0),
+    "blender": (4, 5, 15),
     "location": "View3D > Sidebar > Simple Bake",
     "category": "Material",
-    "description": "Smart UV + bake selected maps to images + build baked material (Blender 5.0.0-safe)",
+    "description": "Smart UV + bake selected maps to images + build baked material (Blender 4.5.15 LTS-safe)",
 }
 
 import bpy
@@ -23,7 +23,7 @@ from bpy.props import (
 
 
 # -----------------------------
-# Core helpers (Blender 5.0.0)
+# Core helpers (Blender 4.5 LTS)
 # -----------------------------
 
 def ensure_cycles(scene: bpy.types.Scene):
@@ -94,7 +94,6 @@ def save_png(img, folder_abs, filename):
 
 
 def ensure_material(obj):
-    # In Blender 5.0+, materials always have a node_tree initialized by default (use_nodes removed)
     mat = obj.active_material
     if not mat and obj.data.materials:
         mat = obj.data.materials[0]
@@ -102,8 +101,12 @@ def ensure_material(obj):
 
     if not mat:
         mat = bpy.data.materials.new(name=f"{obj.name}_Source")
+        mat.use_nodes = True
         obj.data.materials.append(mat)
         obj.active_material_index = len(obj.data.materials) - 1
+
+    if not mat.use_nodes:
+        mat.use_nodes = True
 
     return mat
 
@@ -151,8 +154,8 @@ def setup_bake_settings(scene, margin, clear=True):
 
 
 def build_baked_material(obj, images, multiply_ao=True):
-    # Blender 5.0+ creates node_tree natively on new materials
     mat = bpy.data.materials.new(name=f"{obj.name}_Baked")
+    mat.use_nodes = True
     nt = mat.node_tree
     nodes = nt.nodes
     links = nt.links
