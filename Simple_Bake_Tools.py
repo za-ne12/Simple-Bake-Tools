@@ -2,10 +2,10 @@ bl_info = {
     "name": "Simple Bake Tools",
     "author": "za-ne12",
     "version": (0, 4, 0),
-    "blender": (5, 0, 0),
+    "blender": (5, 2, 2),
     "location": "View3D > Sidebar > Simple Bake",
     "category": "Material",
-    "description": "Smart UV + bake selected maps to images + build baked material (Blender 5.0.0-safe)",
+    "description": "Smart UV + bake selected maps to images + build baked material (Blender 5.2.2-safe)",
 }
 
 import bpy
@@ -23,7 +23,7 @@ from bpy.props import (
 
 
 # -----------------------------
-# Core helpers (Blender 5.0.0)
+# Core helpers (Blender 5.2.2)
 # -----------------------------
 
 def ensure_cycles(scene: bpy.types.Scene):
@@ -264,6 +264,10 @@ class SBT_OT_bake_selected(Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        if hasattr(bpy.app, "is_job_running") and bpy.app.is_job_running("OBJECT_BAKE"):
+            self.report({"WARNING"}, "An object bake job is already running.")
+            return {"CANCELLED"}
+
         scene = context.scene
         s = scene.sbt_settings
 
