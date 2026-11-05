@@ -2,10 +2,10 @@ bl_info = {
     "name": "Simple Bake Tools",
     "author": "za-ne12",
     "version": (0, 4, 0),
-    "blender": (5, 0, 0),
+    "blender": (5, 2, 3),
     "location": "View3D > Sidebar > Simple Bake",
     "category": "Material",
-    "description": "Smart UV + bake selected maps to images + build baked material (Blender 5.0.0-safe)",
+    "description": "Smart UV + bake selected maps to images + build baked material (Blender 5.2.3-safe)",
 }
 
 import bpy
@@ -23,7 +23,7 @@ from bpy.props import (
 
 
 # -----------------------------
-# Core helpers (Blender 5.0.0)
+# Core helpers (Blender 5.2.3)
 # -----------------------------
 
 def ensure_cycles(scene: bpy.types.Scene):
@@ -94,7 +94,7 @@ def save_png(img, folder_abs, filename):
 
 
 def ensure_material(obj):
-    # In Blender 5.0+, materials always have a node_tree initialized by default (use_nodes removed)
+    # In Blender 5.2.3, materials always have a native node_tree (use_nodes removed in 5.0+)
     mat = obj.active_material
     if not mat and obj.data.materials:
         mat = obj.data.materials[0]
@@ -151,7 +151,7 @@ def setup_bake_settings(scene, margin, clear=True):
 
 
 def build_baked_material(obj, images, multiply_ao=True):
-    # Blender 5.0+ creates node_tree natively on new materials
+    # Blender 5.2.3 initializes mat.node_tree automatically
     mat = bpy.data.materials.new(name=f"{obj.name}_Baked")
     nt = mat.node_tree
     nodes = nt.nodes
@@ -264,6 +264,10 @@ class SBT_OT_bake_selected(Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        if hasattr(bpy.app, "is_job_running") and bpy.app.is_job_running("OBJECT_BAKE"):
+            self.report({"WARNING"}, "An object bake job is already running.")
+            return {"CANCELLED"}
+
         scene = context.scene
         s = scene.sbt_settings
 
