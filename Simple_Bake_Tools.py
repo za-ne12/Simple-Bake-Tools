@@ -23,7 +23,7 @@ from bpy.props import (
 
 
 # -----------------------------
-# Core helpers
+# Core helpers (Blender 5.2.2)
 # -----------------------------
 
 def ensure_cycles(scene: bpy.types.Scene):
@@ -39,13 +39,15 @@ def active_mesh_obj(context):
 
 
 def object_bake_type_identifiers():
-
     prop = bpy.ops.object.bake.get_rna_type().properties["type"]
     return {e.identifier for e in prop.enum_items}
 
 
 def ensure_uv_and_smart_project(context, obj, angle_limit_deg=66.0, island_margin=0.02):
     angle_limit_rad = math.radians(angle_limit_deg)
+
+    if context.object and context.object.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
 
     vl = context.view_layer
     for o in vl.objects:
@@ -92,7 +94,7 @@ def save_png(img, folder_abs, filename):
 
 
 def ensure_material(obj):
-
+    # In Blender 5.2.2, materials always have a native node_tree (use_nodes removed in 5.0+)
     mat = obj.active_material
     if not mat and obj.data.materials:
         mat = obj.data.materials[0]
@@ -100,12 +102,8 @@ def ensure_material(obj):
 
     if not mat:
         mat = bpy.data.materials.new(name=f"{obj.name}_Source")
-        mat.use_nodes = True
         obj.data.materials.append(mat)
         obj.active_material_index = len(obj.data.materials) - 1
-
-    if not mat.use_nodes:
-        mat.use_nodes = True
 
     return mat
 
@@ -130,6 +128,16 @@ def ensure_active_image_node(mat, node_name, image):
     return node
 
 
+def cleanup_temp_bake_nodes(mat, temp_node_names):
+    if not mat or not mat.node_tree:
+        return
+    nodes = mat.node_tree.nodes
+    for name in temp_node_names:
+        node = nodes.get(name)
+        if node:
+            nodes.remove(node)
+
+
 def safe_setattr(obj, name, value):
     if hasattr(obj, name):
         setattr(obj, name, value)
@@ -137,13 +145,14 @@ def safe_setattr(obj, name, value):
 
 def setup_bake_settings(scene, margin, clear=True):
     bs = scene.render.bake
+    safe_setattr(bs, "target", "IMAGE_TEXTURES")
     safe_setattr(bs, "margin", margin)
     safe_setattr(bs, "use_clear", clear)
 
 
 def build_baked_material(obj, images, multiply_ao=True):
+    # Blender 5.2.2 initializes mat.node_tree automatically
     mat = bpy.data.materials.new(name=f"{obj.name}_Baked")
-    mat.use_nodes = True
     nt = mat.node_tree
     nodes = nt.nodes
     links = nt.links
@@ -173,7 +182,7 @@ def build_baked_material(obj, images, multiply_ao=True):
 
     if base and ao and multiply_ao:
         mix = nodes.new("ShaderNodeMix")
-        mix.data_type = 'RGBA'
+        mix.data_type = "RGBA"
         mix.blend_type = "MULTIPLY"
         mix.inputs["Factor"].default_value = 1.0
         mix.location = (-120, 180)
@@ -194,6 +203,8 @@ def build_baked_material(obj, images, multiply_ao=True):
         e.image = images["emission"]
         e.location = (-450, -500)
         links.new(e.outputs["Color"], bsdf.inputs["Emission Color"])
+        if "Emission Strength" in bsdf.inputs:
+            bsdf.inputs["Emission Strength"].default_value = 1.0
 
     if "normal" in images:
         nimg = nodes.new("ShaderNodeTexImage")
@@ -253,6 +264,11 @@ class SBT_OT_bake_selected(Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        # Blender 5.1+ / 5.2.2 job check API
+        if hasattr(bpy.app, "is_job_running") and bpy.app.is_job_running("OBJECT_BAKE"):
+            self.report({"WARNING"}, "An object bake job is already running.")
+            return {"CANCELLED"}
+
         scene = context.scene
         s = scene.sbt_settings
 
@@ -311,26 +327,34 @@ class SBT_OT_bake_selected(Operator):
         obj.select_set(True)
         vl.objects.active = obj
 
-        if "basecolor" in images:
-            ensure_active_image_node(src_mat, "SBT_TARGET_basecolor", images["basecolor"])
+        temp_nodes = []
+        try:
+            if "basecolor" in images:
+                temp_nodes.append("SBT_TARGET_basecolor")
+                ensure_active_image_node(src_mat, "SBT_TARGET_basecolor", images["basecolor"])
+                bpy.ops.object.bake(type="DIFFUSE", pass_filter={"COLOR"})
 
-            bpy.ops.object.bake(type="DIFFUSE", pass_filter={"COLOR"})
+            if "normal" in images:
+                temp_nodes.append("SBT_TARGET_normal")
+                ensure_active_image_node(src_mat, "SBT_TARGET_normal", images["normal"])
+                bpy.ops.object.bake(type="NORMAL")
 
-        if "normal" in images:
-            ensure_active_image_node(src_mat, "SBT_TARGET_normal", images["normal"])
-            bpy.ops.object.bake(type="NORMAL")
+            if "ao" in images:
+                temp_nodes.append("SBT_TARGET_ao")
+                ensure_active_image_node(src_mat, "SBT_TARGET_ao", images["ao"])
+                bpy.ops.object.bake(type="AO")
 
-        if "ao" in images:
-            ensure_active_image_node(src_mat, "SBT_TARGET_ao", images["ao"])
-            bpy.ops.object.bake(type="AO")
+            if "roughness" in images:
+                temp_nodes.append("SBT_TARGET_roughness")
+                ensure_active_image_node(src_mat, "SBT_TARGET_roughness", images["roughness"])
+                bpy.ops.object.bake(type="ROUGHNESS")
 
-        if "roughness" in images:
-            ensure_active_image_node(src_mat, "SBT_TARGET_roughness", images["roughness"])
-            bpy.ops.object.bake(type="ROUGHNESS")
-
-        if "emission" in images:
-            ensure_active_image_node(src_mat, "SBT_TARGET_emission", images["emission"])
-            bpy.ops.object.bake(type="EMIT")
+            if "emission" in images:
+                temp_nodes.append("SBT_TARGET_emission")
+                ensure_active_image_node(src_mat, "SBT_TARGET_emission", images["emission"])
+                bpy.ops.object.bake(type="EMIT")
+        finally:
+            cleanup_temp_bake_nodes(src_mat, temp_nodes)
 
         if s.create_new_material:
             baked_mat = build_baked_material(obj, images, multiply_ao=s.ao_multiply_base)
