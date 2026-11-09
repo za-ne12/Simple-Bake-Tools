@@ -87,10 +87,29 @@ def ensure_dir(path_abs):
     os.makedirs(path_abs, exist_ok=True)
 
 
-def save_png(img, folder_abs, filename):
+def save_image(img, folder_abs, filename_base, file_format, pack=False, save_to_disk=False):
+    if pack:
+        img.pack()
+
+    if not save_to_disk:
+        return
+
+    # Map enum to actual extensions
+    ext_map = {
+        "PNG": ".png",
+        "JPEG": ".jpg",
+        "TARGA": ".tga",
+        "OPEN_EXR": ".exr"
+    }
+    ext = ext_map.get(file_format, ".png")
+    filename = filename_base + ext
+
     img.filepath_raw = os.path.join(folder_abs, filename)
-    img.file_format = "PNG"
-    img.save()
+    img.file_format = file_format
+    try:
+        img.save()
+    except Exception as e:
+        print(f"Failed to save {filename}: {e}")
 
 
 def ensure_material(obj):
@@ -170,7 +189,11 @@ def build_baked_material(obj, images, multiply_ao=True):
     base = None
     ao = None
 
-    if "basecolor" in images:
+    if "combined" in images:
+        base = nodes.new("ShaderNodeTexImage")
+        base.image = images["combined"]
+        base.location = (-450, 250)
+    elif "basecolor" in images:
         base = nodes.new("ShaderNodeTexImage")
         base.image = images["basecolor"]
         base.location = (-450, 250)
@@ -232,6 +255,7 @@ class SBT_Settings(PropertyGroup):
     tex_size: IntProperty(name="Texture Size", default=2048, min=128, max=16384)
     bake_margin: IntProperty(name="Bake Margin", default=16, min=0, max=256)
 
+    bake_combined: BoolProperty(name="Combined", default=False)
     bake_basecolor: BoolProperty(name="Diffuse Color (Base Color)", default=True)
     bake_normal: BoolProperty(name="Normal", default=True)
     bake_roughness: BoolProperty(name="Roughness", default=False)
@@ -250,7 +274,18 @@ class SBT_Settings(PropertyGroup):
     create_new_material: BoolProperty(name="Create & Assign Baked Material", default=True)
     ao_multiply_base: BoolProperty(name="Multiply AO into Base Color", default=True)
 
-    save_to_disk: BoolProperty(name="Save PNGs to Disk", default=False)
+    pack_images: BoolProperty(name="Pack Images into .blend", default=False)
+    save_to_disk: BoolProperty(name="Save Images to Disk", default=False)
+    image_format: EnumProperty(
+        name="File Format",
+        items=[
+            ("PNG", "PNG", ""),
+            ("JPEG", "JPEG", ""),
+            ("TARGA", "Targa", ""),
+            ("OPEN_EXR", "OpenEXR", "")
+        ],
+        default="PNG"
+    )
     output_dir: StringProperty(name="Output Folder", subtype="DIR_PATH", default="//bakes/")
 
 
@@ -271,19 +306,17 @@ class SBT_OT_bake_selected(Operator):
         scene = context.scene
         s = scene.sbt_settings
 
-        obj = active_mesh_obj(context)
-        if not obj:
-            self.report({"ERROR"}, "Select an active MESH object.")
+        selected_meshes = [o for o in context.selected_objects if o.type == 'MESH']
+        if not selected_meshes:
+            self.report({"ERROR"}, "Select at least one MESH object.")
             return {"CANCELLED"}
 
         ensure_cycles(scene)
 
-        if s.smart_uv:
-            ensure_uv_and_smart_project(context, obj, s.uv_angle_limit_deg, s.uv_island_margin)
-
         available = object_bake_type_identifiers()
 
         required = []
+        if s.bake_combined: required.append("COMBINED")
         if s.bake_basecolor: required.append("DIFFUSE")
         if s.bake_normal: required.append("NORMAL")
         if s.bake_roughness: required.append("ROUGHNESS")
@@ -300,75 +333,100 @@ class SBT_OT_bake_selected(Operator):
         bs = scene.render.bake
         safe_setattr(bs, "normal_space", s.normal_space)
 
-        src_mat = ensure_material(obj)
-
-        size = s.tex_size
-        images = {}
-
-        if s.bake_basecolor:
-            images["basecolor"] = new_image(f"{obj.name}_BaseColor", size, is_data=False)
-        if s.bake_normal:
-            images["normal"] = new_image(f"{obj.name}_Normal", size, is_data=True)
-        if s.bake_roughness:
-            images["roughness"] = new_image(f"{obj.name}_Roughness", size, is_data=True)
-        if s.bake_emission:
-            images["emission"] = new_image(f"{obj.name}_Emission", size, is_data=False)
-        if s.bake_ao:
-            images["ao"] = new_image(f"{obj.name}_AO", size, is_data=True)
-
-        if not images:
-            self.report({"ERROR"}, "No maps selected.")
-            return {"CANCELLED"}
-
         vl = context.view_layer
+
+        # Unselect all to start fresh
         for o in vl.objects:
             o.select_set(False)
-        obj.select_set(True)
-        vl.objects.active = obj
 
-        temp_nodes = []
-        try:
-            if "basecolor" in images:
-                temp_nodes.append("SBT_TARGET_basecolor")
-                ensure_active_image_node(src_mat, "SBT_TARGET_basecolor", images["basecolor"])
-                bpy.ops.object.bake(type="DIFFUSE", pass_filter={"COLOR"})
+        size = s.tex_size
 
-            if "normal" in images:
-                temp_nodes.append("SBT_TARGET_normal")
-                ensure_active_image_node(src_mat, "SBT_TARGET_normal", images["normal"])
-                bpy.ops.object.bake(type="NORMAL")
+        for obj in selected_meshes:
+            # Isolate the current object for processing
+            obj.select_set(True)
+            vl.objects.active = obj
 
-            if "ao" in images:
-                temp_nodes.append("SBT_TARGET_ao")
-                ensure_active_image_node(src_mat, "SBT_TARGET_ao", images["ao"])
-                bpy.ops.object.bake(type="AO")
+            if s.smart_uv:
+                ensure_uv_and_smart_project(context, obj, s.uv_angle_limit_deg, s.uv_island_margin)
 
-            if "roughness" in images:
-                temp_nodes.append("SBT_TARGET_roughness")
-                ensure_active_image_node(src_mat, "SBT_TARGET_roughness", images["roughness"])
-                bpy.ops.object.bake(type="ROUGHNESS")
+            src_mat = ensure_material(obj)
 
-            if "emission" in images:
-                temp_nodes.append("SBT_TARGET_emission")
-                ensure_active_image_node(src_mat, "SBT_TARGET_emission", images["emission"])
-                bpy.ops.object.bake(type="EMIT")
-        finally:
-            cleanup_temp_bake_nodes(src_mat, temp_nodes)
+            images = {}
+            if s.bake_combined:
+                images["combined"] = new_image(f"{obj.name}_Combined", size, is_data=False)
+            if s.bake_basecolor:
+                images["basecolor"] = new_image(f"{obj.name}_BaseColor", size, is_data=False)
+            if s.bake_normal:
+                images["normal"] = new_image(f"{obj.name}_Normal", size, is_data=True)
+            if s.bake_roughness:
+                images["roughness"] = new_image(f"{obj.name}_Roughness", size, is_data=True)
+            if s.bake_emission:
+                images["emission"] = new_image(f"{obj.name}_Emission", size, is_data=False)
+            if s.bake_ao:
+                images["ao"] = new_image(f"{obj.name}_AO", size, is_data=True)
 
-        if s.create_new_material:
-            baked_mat = build_baked_material(obj, images, multiply_ao=s.ao_multiply_base)
-            if obj.data.materials:
-                obj.data.materials[obj.active_material_index] = baked_mat
-            else:
-                obj.data.materials.append(baked_mat)
+            if not images:
+                self.report({"ERROR"}, "No maps selected.")
+                return {"CANCELLED"}
 
-        if s.save_to_disk:
-            out_dir_abs = bpy.path.abspath(s.output_dir)
-            ensure_dir(out_dir_abs)
-            for key, img in images.items():
-                save_png(img, out_dir_abs, f"{obj.name}_{key}.png")
+            temp_nodes = []
+            try:
+                if "combined" in images:
+                    temp_nodes.append("SBT_TARGET_combined")
+                    ensure_active_image_node(src_mat, "SBT_TARGET_combined", images["combined"])
+                    bpy.ops.object.bake(type="COMBINED")
 
-        self.report({"INFO"}, "Bake complete.")
+                if "basecolor" in images:
+                    temp_nodes.append("SBT_TARGET_basecolor")
+                    ensure_active_image_node(src_mat, "SBT_TARGET_basecolor", images["basecolor"])
+                    bpy.ops.object.bake(type="DIFFUSE", pass_filter={"COLOR"})
+
+                if "normal" in images:
+                    temp_nodes.append("SBT_TARGET_normal")
+                    ensure_active_image_node(src_mat, "SBT_TARGET_normal", images["normal"])
+                    bpy.ops.object.bake(type="NORMAL")
+
+                if "ao" in images:
+                    temp_nodes.append("SBT_TARGET_ao")
+                    ensure_active_image_node(src_mat, "SBT_TARGET_ao", images["ao"])
+                    bpy.ops.object.bake(type="AO")
+
+                if "roughness" in images:
+                    temp_nodes.append("SBT_TARGET_roughness")
+                    ensure_active_image_node(src_mat, "SBT_TARGET_roughness", images["roughness"])
+                    bpy.ops.object.bake(type="ROUGHNESS")
+
+                if "emission" in images:
+                    temp_nodes.append("SBT_TARGET_emission")
+                    ensure_active_image_node(src_mat, "SBT_TARGET_emission", images["emission"])
+                    bpy.ops.object.bake(type="EMIT")
+            finally:
+                cleanup_temp_bake_nodes(src_mat, temp_nodes)
+
+            if s.create_new_material:
+                baked_mat = build_baked_material(obj, images, multiply_ao=s.ao_multiply_base)
+                if obj.data.materials:
+                    obj.data.materials[obj.active_material_index] = baked_mat
+                else:
+                    obj.data.materials.append(baked_mat)
+
+            if s.save_to_disk or s.pack_images:
+                out_dir_abs = bpy.path.abspath(s.output_dir) if s.save_to_disk else ""
+                if s.save_to_disk:
+                    ensure_dir(out_dir_abs)
+                for key, img in images.items():
+                    save_image(img, out_dir_abs, f"{obj.name}_{key}", s.image_format, pack=s.pack_images, save_to_disk=s.save_to_disk)
+
+            # Deselect current object before next iteration
+            obj.select_set(False)
+
+        # Reselect original objects
+        for obj in selected_meshes:
+            obj.select_set(True)
+        if selected_meshes:
+            vl.objects.active = selected_meshes[0]
+
+        self.report({"INFO"}, f"Bake complete for {len(selected_meshes)} object(s).")
         return {"FINISHED"}
 
 
@@ -387,42 +445,43 @@ class SBT_PT_panel(Panel):
         s = context.scene.sbt_settings
         layout = self.layout
 
-        layout.label(text="Maps:")
-        col = layout.column(align=True)
+        box = layout.box()
+        box.label(text="Maps", icon="TEXTURE_DATA")
+        col = box.column(align=True)
+        col.prop(s, "bake_combined")
         col.prop(s, "bake_basecolor")
         col.prop(s, "bake_normal")
         col.prop(s, "bake_roughness")
         col.prop(s, "bake_emission")
         col.prop(s, "bake_ao")
 
-        layout.separator()
-
-        layout.label(text="UV:")
-        layout.prop(s, "smart_uv")
-        sub = layout.column(align=True)
+        box = layout.box()
+        box.label(text="UV Settings", icon="UV_DATA")
+        box.prop(s, "smart_uv")
+        sub = box.column(align=True)
         sub.enabled = s.smart_uv
         sub.prop(s, "uv_angle_limit_deg")
         sub.prop(s, "uv_island_margin")
 
-        layout.separator()
+        box = layout.box()
+        box.label(text="Bake Settings", icon="RENDER_RESULT")
+        box.prop(s, "tex_size")
+        box.prop(s, "bake_margin")
+        box.prop(s, "normal_space")
 
-        layout.label(text="Bake:")
-        layout.prop(s, "tex_size")
-        layout.prop(s, "bake_margin")
-        layout.prop(s, "normal_space")
-
-        layout.separator()
-
-        layout.label(text="Output:")
-        layout.prop(s, "create_new_material")
-        layout.prop(s, "ao_multiply_base")
-        layout.prop(s, "save_to_disk")
-        sub2 = layout.column(align=True)
+        box = layout.box()
+        box.label(text="Output", icon="FILE_FOLDER")
+        box.prop(s, "create_new_material")
+        box.prop(s, "ao_multiply_base")
+        box.prop(s, "pack_images")
+        box.prop(s, "save_to_disk")
+        sub2 = box.column(align=True)
         sub2.enabled = s.save_to_disk
+        sub2.prop(s, "image_format")
         sub2.prop(s, "output_dir")
 
         layout.separator()
-        layout.operator("sbt.bake_selected", icon="RENDER_STILL")
+        layout.operator("sbt.bake_selected", text="Bake Selected Objects", icon="RENDER_STILL")
 
 
 # -----------------------------
